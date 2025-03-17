@@ -20,7 +20,7 @@ from database import (
     PasswordResetTokenModel,
     RefreshTokenModel
 )
-from schemas.accounts import (
+from schemas import (
     UserRegistrationResponseSchema,
     UserRegistrationRequestSchema,
     MessageResponseSchema,
