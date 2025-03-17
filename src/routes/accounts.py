@@ -98,6 +98,111 @@ async def register_user(
 
 
 @router.post(
+    "/login/",
+    response_model=UserLoginResponseSchema,
+    status_code=status.HTTP_201_CREATED,
+    summary="Authenticate a user",
+    description="Authenticates a user and returns access and refresh tokens."
+)
+async def login_user(
+        request_data: UserLoginRequestSchema,
+        db: AsyncSession = Depends(get_db),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        settings: BaseSettings = Depends(get_settings),
+):
+    try:
+        stmt_user = select(UserModel).where(
+            UserModel.email == request_data.email
+        )
+        result_user = await db.execute(stmt_user)
+        user = result_user.scalars().first()
+
+        if not user or not user.verify_password(request_data.password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password."
+            )
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is not activated."
+            )
+
+        access_token = jwt_manager.create_access_token(
+            data={"user_id": user.id}
+        )
+        refresh_token = jwt_manager.create_refresh_token(
+            data={"user_id": user.id}
+        )
+
+        refresh_token_record = RefreshTokenModel.create(
+            user_id=user.id,
+            token=refresh_token,
+            days_valid=settings.LOGIN_TIME_DAYS,
+        )
+        db.add(refresh_token_record)
+        await db.commit()
+
+        return UserLoginResponseSchema(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer"
+        )
+
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing the request."
+        )
+
+
+@router.post(
+    "/refresh/",
+    response_model=TokenRefreshResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Refresh access token",
+    description="Refreshes an access token using a valid refresh token."
+)
+async def refresh_user(
+        request_data: TokenRefreshRequestSchema,
+        db: AsyncSession = Depends(get_db),
+        jwt_manager: JWTAuthManager = Depends(get_jwt_auth_manager),
+):
+    try:
+        decoded_token = jwt_manager.decode_refresh_token(
+            request_data.refresh_token
+        )
+    except BaseSecurityError:
+        raise HTTPException(status_code=400, detail="Token has expired.")
+
+    refresh_token = await db.execute(
+        select(RefreshTokenModel).where(
+            RefreshTokenModel.token == request_data.refresh_token
+        )
+    )
+    refresh_token = refresh_token.scalar_one_or_none()
+
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token not found.")
+
+    user = await db.execute(
+        select(UserModel).where(UserModel.id == decoded_token.get("user_id"))
+    )
+    user = user.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    access_token = jwt_manager.create_access_token(
+        data={"user_id": decoded_token.get("user_id")}
+    )
+
+    return TokenRefreshResponseSchema(access_token=access_token)
+
+
+@router.post(
     "/activate/",
     response_model=MessageResponseSchema,
     status_code=status.HTTP_200_OK,
@@ -175,6 +280,7 @@ async def password_reset_request(
         db: AsyncSession = Depends(get_db),
 ):
     try:
+
         stmt_user = select(UserModel).where(
             UserModel.email == request_data.email
         )
@@ -288,108 +394,3 @@ async def password_reset_complete(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while resetting the password."
         )
-
-
-@router.post(
-    "/login/",
-    response_model=UserLoginResponseSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Authenticate a user",
-    description="Authenticates a user and returns access and refresh tokens."
-)
-async def login_user(
-        request_data: UserLoginRequestSchema,
-        db: AsyncSession = Depends(get_db),
-        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
-        settings: BaseSettings = Depends(get_settings),
-):
-    try:
-        stmt_user = select(UserModel).where(
-            UserModel.email == request_data.email
-        )
-        result_user = await db.execute(stmt_user)
-        user = result_user.scalars().first()
-
-        if not user or not user.verify_password(request_data.password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password."
-            )
-
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is not activated."
-            )
-
-        access_token = jwt_manager.create_access_token(
-            data={"user_id": user.id}
-        )
-        refresh_token = jwt_manager.create_refresh_token(
-            data={"user_id": user.id}
-        )
-
-        refresh_token_record = RefreshTokenModel.create(
-            user_id=user.id,
-            token=refresh_token,
-            days_valid=settings.LOGIN_TIME_DAYS,
-        )
-        db.add(refresh_token_record)
-        await db.commit()
-
-        return UserLoginResponseSchema(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer"
-        )
-
-    except SQLAlchemyError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while processing the request."
-        )
-
-
-@router.post(
-    "/refresh/",
-    response_model=TokenRefreshResponseSchema,
-    status_code=status.HTTP_200_OK,
-    summary="Refresh access token",
-    description="Refreshes an access token using a valid refresh token."
-)
-async def refresh_user(
-        request_data: TokenRefreshRequestSchema,
-        db: AsyncSession = Depends(get_db),
-        jwt_manager: JWTAuthManager = Depends(get_jwt_auth_manager),
-):
-    try:
-        decoded_token = jwt_manager.decode_refresh_token(
-            request_data.refresh_token
-        )
-    except BaseSecurityError:
-        raise HTTPException(status_code=400, detail="Token has expired.")
-
-    refresh_token = await db.execute(
-        select(RefreshTokenModel).where(
-            RefreshTokenModel.token == request_data.refresh_token
-        )
-    )
-    refresh_token = refresh_token.scalar_one_or_none()
-
-    if not refresh_token:
-        raise HTTPException(status_code=401, detail="Refresh token not found.")
-
-    user = await db.execute(
-        select(UserModel).where(UserModel.id == decoded_token.get("user_id"))
-    )
-    user = user.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    access_token = jwt_manager.create_access_token(
-        data={"user_id": decoded_token.get("user_id")}
-    )
-
-    return TokenRefreshResponseSchema(access_token=access_token)
